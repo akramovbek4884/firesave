@@ -1,0 +1,27 @@
+{
+  "name": "firesave-bot",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "dev:bot": "tsx apps/bot/src/index.ts",
+    "dev:worker": "tsx apps/worker/src/index.ts",
+    "dev": "concurrently -n bot,worker -c blue,green \"pnpm dev:bot\" \"pnpm dev:worker\"",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "concurrently": "^9.2.0",
+    "tsx": "^4.20.4",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@types/pg": "^8.20.4",
+    "pg": "^8.22.0"
+  }
+}

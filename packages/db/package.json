@@ -1,0 +1,17 @@
+{
+  "name": "@firesave/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@firesave/core": "workspace:*",
+    "@supabase/supabase-js": "^2.56.0",
+    "pg": "^8.22.0",
+    "pg-boss": "^10.1.6"
+  }
+}

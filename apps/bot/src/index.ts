@@ -1,0 +1,323 @@
+import "dotenv/config";
+import { randomUUID } from "node:crypto";
+import Fastify from "fastify";
+import { Bot, InlineKeyboard, webhookCallback } from "grammy";
+import {
+  cleanUrl,
+  detectPlatform,
+  isSupportedUrl,
+  type DownloadJobPayload,
+  type Platform,
+  type RequestedFormat,
+} from "@firesave/core";
+import {
+  checkUserRateLimit,
+  createDownloadJobRecord,
+  enqueueDownloadJob,
+  findCachedDownloadJob,
+  getAdminAnalytics,
+  getUserStats,
+  upsertTelegramUser,
+  createSignedDownloadUrl,
+} from "@firesave/db";
+
+interface PendingRequest {
+  sourceUrl: string;
+  platform: Platform;
+  telegramUserId: number;
+  chatId: number;
+}
+
+const botToken = process.env.BOT_TOKEN;
+const adminIdEnv = process.env.ADMIN_TELEGRAM_ID ? Number(process.env.ADMIN_TELEGRAM_ID) : null;
+
+if (!botToken) {
+  throw new Error("BOT_TOKEN topilmadi. `.env` faylini to‘ldiring.");
+}
+
+const bot = new Bot(botToken);
+const fastify = Fastify({ logger: true });
+const pendingRequests = new Map<string, PendingRequest>();
+
+fastify.get("/health", async () => ({ status: "ok", service: "firesave-bot" }));
+
+// Command: /start
+bot.command("start", async (ctx) => {
+  if (!ctx.from) return;
+  try {
+    await upsertTelegramUser({
+      telegramUserId: ctx.from.id,
+      username: ctx.from.username,
+    });
+  } catch (error) {
+    console.error("/start uchun foydalanuvchini saqlab bo‘lmadi:", error);
+    await ctx.reply(
+      "⚠️ Bot hozircha ma’lumotlar bazasiga ulanmayapti. Administrator konfiguratsiyani tekshirishi kerak.",
+    );
+    return;
+  }
+
+  const lines = [
+    "🚀 **FireSave Downloader Botiga xush kelibsiz!**",
+    "",
+    "Menga quyidagi platformalardan media link yuboring:",
+    "• 📸 **Instagram** (Reels, Post, IGTV)",
+    "• 🎵 **TikTok** (Video & Audio)",
+    "• 🎬 **VK** (Video & Clips)",
+    "",
+    "Siz **Video** yoki **Audio (MP3)** formatini tanlab yuklab olishingiz mumkin.",
+    "",
+    "📌 Buyruqlar: /help | /stats | /myjobs",
+  ];
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
+// Command: /help
+bot.command("help", async (ctx) => {
+  const lines = [
+    "ℹ️ **Qo‘llanma & Qo‘llab-quvvatlanadigan platformalar:**",
+    "",
+    "1. Qo‘llab-quvvatlanadigan ilovalar: Instagram, TikTok, VK.",
+    "2. Botga havola yuboring.",
+    "3. `Video 📹` yoki `Audio 🎵` tugmasidan birini tanlang.",
+    "4. Bot mediani tayyorlab chatga yuboradi yoki tezkor yuklab olish havolasini beradi.",
+    "",
+    "💡 Tip: Bir xil havolalar keshdan lahzada yuboriladi!",
+  ];
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
+// Command: /stats
+bot.command("stats", async (ctx) => {
+  if (!ctx.from) return;
+  const stats = await getUserStats(ctx.from.id);
+
+  const lines = [
+    "📊 **Sizning statistikangiz:**",
+    "",
+    `👤 Telegram ID: \`${ctx.from.id}\``,
+    `📥 Jami yuklashlar so‘rovi: ${stats.total} ta`,
+    `✅ Muvaffaqiyatli yuklanganlar: ${stats.done} ta`,
+    `📅 Bugungi yuklashlaringiz: ${stats.daily} ta (limit: 50)`,
+  ];
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
+// Command: /admin
+bot.command("admin", async (ctx) => {
+  if (!ctx.from) return;
+
+  const user = await upsertTelegramUser({
+    telegramUserId: ctx.from.id,
+    username: ctx.from.username,
+  });
+
+  const isAdmin = user.isAdmin || (adminIdEnv && ctx.from.id === adminIdEnv);
+
+  if (!isAdmin) {
+    await ctx.reply("❌ Bu buyruq faqat adminlar uchun.");
+    return;
+  }
+
+  const stats = await getAdminAnalytics();
+
+  const lines = [
+    "👑 **Admin Dashboard & Analytics:**",
+    "",
+    `👥 Jami foydalanuvchilar: **${stats.totalUsers}**`,
+    `📦 Jami joblar: **${stats.totalJobs}**`,
+    `✅ Muvaffaqiyatli: **${stats.completedJobs}**`,
+    `❌ Xatolar: **${stats.failedJobs}**`,
+    `📅 Bugungi joblar: **${stats.todayJobs}**`,
+    "",
+    "📊 **Platformalar bo‘yicha:**",
+    `• Instagram: ${stats.platformBreakdown.instagram ?? 0}`,
+    `• TikTok: ${stats.platformBreakdown.tiktok ?? 0}`,
+    `• VK: ${stats.platformBreakdown.vk ?? 0}`,
+  ];
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
+// Handle URL text messages
+bot.on("message:text", async (ctx) => {
+  if (!ctx.from) return;
+  const rawText = ctx.message.text.trim();
+
+  // Ignore commands
+  if (rawText.startsWith("/")) return;
+
+  const normalizedUrl = cleanUrl(rawText);
+
+  if (!isSupportedUrl(normalizedUrl)) {
+    await ctx.reply("❌ Hozircha faqat Instagram, TikTok va VK havolalari qo‘llab-quvvatlanadi.");
+    return;
+  }
+
+  // Rate limit check
+  const rateLimitStatus = await checkUserRateLimit(ctx.from.id);
+  if (!rateLimitStatus.allowed) {
+    await ctx.reply(`⚠️ ${rateLimitStatus.message || "Limitga yetdingiz."}`);
+    return;
+  }
+
+  const platform = detectPlatform(normalizedUrl);
+  if (!platform) {
+    await ctx.reply("❌ Platformani aniqlab bo‘lmadi.");
+    return;
+  }
+
+  const requestId = randomUUID();
+  pendingRequests.set(requestId, {
+    sourceUrl: normalizedUrl,
+    platform,
+    telegramUserId: ctx.from.id,
+    chatId: ctx.chat.id,
+  });
+
+  const keyboard = new InlineKeyboard()
+    .text("📹 Video", `dl:${requestId}:video`)
+    .text("🎵 Audio", `dl:${requestId}:audio`);
+
+  await ctx.reply(`🔗 Link qabul qilindi.\n🌐 Platforma: **${platform.toUpperCase()}**\n\nQaysi formatda yuklamoqchisiz?`, {
+    reply_markup: keyboard,
+    parse_mode: "Markdown",
+  });
+});
+
+// Callback query: Format selection
+bot.callbackQuery(/^dl:([^:]+):(video|audio)$/, async (ctx) => {
+  if (!ctx.from) return;
+
+  const requestId = ctx.match[1];
+  const requestedFormat = ctx.match[2] as RequestedFormat;
+  const pendingRequest = pendingRequests.get(requestId);
+
+  if (!pendingRequest) {
+    await ctx.answerCallbackQuery({
+      text: "So‘rov muddati tugagan. Linkni qayta yuboring.",
+      show_alert: true,
+    });
+    return;
+  }
+
+  if (pendingRequest.telegramUserId !== ctx.from.id) {
+    await ctx.answerCallbackQuery({
+      text: "Bu tugma boshqa foydalanuvchining so‘roviga tegishli.",
+      show_alert: true,
+    });
+    return;
+  }
+
+  try {
+    await upsertTelegramUser({
+      telegramUserId: pendingRequest.telegramUserId,
+      username: ctx.from.username,
+    });
+
+    // Check Deduplication (Cached job check)
+    const cachedJob = await findCachedDownloadJob(pendingRequest.sourceUrl, requestedFormat);
+    if (cachedJob) {
+      pendingRequests.delete(requestId);
+      await ctx.answerCallbackQuery({ text: "Tezkor keshdan topildi! ⚡" });
+
+      if (cachedJob.telegramFileId) {
+        await ctx.editMessageText("🚀 Keshdan yuborilmoqda...");
+        if (requestedFormat === "video") {
+          await ctx.replyWithVideo(cachedJob.telegramFileId, {
+            caption: `✅ **${cachedJob.title || "Media"}** (Keshdan⚡)`,
+            parse_mode: "Markdown",
+          });
+        } else {
+          await ctx.replyWithAudio(cachedJob.telegramFileId, {
+            caption: `🎵 **${cachedJob.title || "Audio"}** (Keshdan⚡)`,
+            parse_mode: "Markdown",
+          });
+        }
+        return;
+      } else if (cachedJob.storagePath) {
+        const signedUrl = await createSignedDownloadUrl(cachedJob.storagePath);
+        await ctx.editMessageText(
+          `⚡ **Keshdan topildi!**\n\n📥 [Yuklab olish uchun bosing](${signedUrl})`,
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+    }
+
+    // Create Download Job in DB
+    const { jobId, urlHash } = await createDownloadJobRecord({
+      telegramUserId: pendingRequest.telegramUserId,
+      chatId: pendingRequest.chatId,
+      sourceUrl: pendingRequest.sourceUrl,
+      platform: pendingRequest.platform,
+      requestedFormat,
+    });
+
+    const payload: DownloadJobPayload = {
+      jobId,
+      chatId: pendingRequest.chatId,
+      userId: pendingRequest.telegramUserId,
+      platform: pendingRequest.platform,
+      sourceUrl: pendingRequest.sourceUrl,
+      requestedFormat,
+      urlHash,
+    };
+
+    await enqueueDownloadJob(payload);
+    pendingRequests.delete(requestId);
+
+    await ctx.answerCallbackQuery({ text: "Yuklash navbatga qo‘shildi." });
+    await ctx.editMessageText(
+      `⏳ **So‘rov qabul qilindi!**\n🌐 Platforma: ${pendingRequest.platform.toUpperCase()}\n🎞 Format: ${requestedFormat.toUpperCase()}\n\n⏱️ Worker faollashmoqda...`,
+      { parse_mode: "Markdown" },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Noma’lum xatolik";
+    await ctx.answerCallbackQuery({
+      text: "So‘rovni yaratib bo‘lmadi.",
+      show_alert: true,
+    });
+    await ctx.reply(`❌ Xatolik: ${message}`);
+  }
+});
+
+async function start(): Promise<void> {
+  const webhookUrl = process.env.WEBHOOK_URL;
+  const port = Number(process.env.PORT ?? 3000);
+
+  if (webhookUrl) {
+    fastify.post("/webhook", async (request, reply) => {
+      const handler = webhookCallback(bot, "fastify");
+      return handler(request, reply);
+    });
+
+    await bot.api.setWebhook(`${webhookUrl.replace(/\/$/, "")}/webhook`);
+    await fastify.listen({ port, host: "0.0.0.0" });
+    fastify.log.info(`Bot webhook rejimida ishga tushdi: ${port}`);
+    return;
+  }
+
+  bot.catch((err) => {
+    console.error("Bot xatoligi yuz berdi:", err.error || err);
+  });
+
+  await bot.start();
+  console.log("Bot long polling rejimida ishga tushdi.");
+}
+
+async function stop(): Promise<void> {
+  await bot.stop();
+  await fastify.close();
+}
+
+process.once("SIGINT", () => void stop().finally(() => process.exit(0)));
+process.once("SIGTERM", () => void stop().finally(() => process.exit(0)));
+
+start().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
