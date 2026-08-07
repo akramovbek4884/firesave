@@ -11,6 +11,7 @@ import {
   type DownloadJobPayload,
   type JobStatus,
   type RequestedFormat,
+  type UserJobSummary,
 } from "@firesave/core";
 
 const { Pool } = pg;
@@ -115,12 +116,31 @@ export async function checkUserRateLimit(telegramUserId: number): Promise<{ allo
     return { allowed: false, message: "Sizning hisobingiz bloklangan." };
   }
 
-  const limitRes = await pool.query<{ max_daily_downloads: number }>(
-    `SELECT max_daily_downloads FROM public.user_limits WHERE telegram_user_id = $1`,
+  const limitRes = await pool.query<{ max_daily_downloads: number; rate_limit_per_minute: number }>(
+    `SELECT max_daily_downloads, rate_limit_per_minute FROM public.user_limits WHERE telegram_user_id = $1`,
     [telegramUserId],
   );
 
   const maxDaily = limitRes.rows[0]?.max_daily_downloads ?? 50;
+  const rateLimitPerMinute = limitRes.rows[0]?.rate_limit_per_minute ?? 10;
+
+  const recentRes = await pool.query<{ count: string }>(
+    `
+    SELECT COUNT(*) as count
+      FROM public.download_jobs dj
+      JOIN public.users u ON u.id = dj.user_id
+     WHERE u.telegram_user_id = $1
+       AND dj.created_at > NOW() - INTERVAL '1 minute'
+    `,
+    [telegramUserId],
+  );
+
+  if (Number(recentRes.rows[0]?.count ?? 0) >= rateLimitPerMinute) {
+    return {
+      allowed: false,
+      message: "Juda tez so‘rov yuboryapsiz. Iltimos, bir daqiqa kuting.",
+    };
+  }
   const today = new Date().toISOString().slice(0, 10);
   const lastDownloadDate = user?.last_download_at ? new Date(user.last_download_at).toISOString().slice(0, 10) : null;
 
@@ -389,4 +409,38 @@ export async function toggleUserBlock(telegramUserId: number, blockState: boolea
     blockState,
   ]);
   return (res.rowCount ?? 0) > 0;
+}
+
+export async function getUserRecentJobs(telegramUserId: number, limit = 10): Promise<UserJobSummary[]> {
+  const pool = getDbPool();
+
+  const res = await pool.query<{
+    id: string;
+    source_url: string;
+    platform: string;
+    requested_format: RequestedFormat;
+    status: JobStatus;
+    title: string | null;
+    created_at: Date;
+  }>(
+    `
+    SELECT dj.id, dj.source_url, dj.platform, dj.requested_format, dj.status, dj.title, dj.created_at
+      FROM public.download_jobs dj
+      JOIN public.users u ON u.id = dj.user_id
+     WHERE u.telegram_user_id = $1
+     ORDER BY dj.created_at DESC
+     LIMIT $2
+    `,
+    [telegramUserId, limit],
+  );
+
+  return res.rows.map((row) => ({
+    id: row.id,
+    sourceUrl: row.source_url,
+    platform: row.platform,
+    requestedFormat: row.requested_format,
+    status: row.status,
+    title: row.title,
+    createdAt: row.created_at.toISOString(),
+  }));
 }

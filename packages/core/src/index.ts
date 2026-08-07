@@ -61,6 +61,16 @@ export interface UserLimitConfig {
   rateLimitPerMinute: number;
 }
 
+export interface UserJobSummary {
+  id: string;
+  sourceUrl: string;
+  platform: string;
+  requestedFormat: RequestedFormat;
+  status: JobStatus;
+  title: string | null;
+  createdAt: string;
+}
+
 export function isSupportedUrl(input: string): boolean {
   return detectPlatform(input) !== null;
 }

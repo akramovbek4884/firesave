@@ -16,7 +16,9 @@ import {
   enqueueDownloadJob,
   findCachedDownloadJob,
   getAdminAnalytics,
+  getUserRecentJobs,
   getUserStats,
+  toggleUserBlock,
   upsertTelegramUser,
   createSignedDownloadUrl,
 } from "@firesave/db";
@@ -39,16 +41,50 @@ const bot = new Bot(botToken);
 const fastify = Fastify({ logger: true });
 const pendingRequests = new Map<string, PendingRequest>();
 
+const STATUS_EMOJI: Record<string, string> = {
+  queued: "⏳",
+  processing: "🔄",
+  done: "✅",
+  failed: "❌",
+};
+
+async function ensureUserNotBlocked(ctx: { from?: { id: number; username?: string }; reply: (text: string) => Promise<unknown> }): Promise<boolean> {
+  if (!ctx.from) return false;
+
+  const user = await upsertTelegramUser({
+    telegramUserId: ctx.from.id,
+    username: ctx.from.username,
+  });
+
+  if (user.isBlocked) {
+    await ctx.reply("🚫 Sizning hisobingiz bloklangan. Admin bilan bog‘laning.");
+    return false;
+  }
+
+  return true;
+}
+
+async function isAdminUser(telegramUserId: number, username?: string): Promise<boolean> {
+  const user = await upsertTelegramUser({ telegramUserId, username });
+  return user.isAdmin || (adminIdEnv !== null && telegramUserId === adminIdEnv);
+}
+
 fastify.get("/health", async () => ({ status: "ok", service: "firesave-bot" }));
 
 // Command: /start
 bot.command("start", async (ctx) => {
   if (!ctx.from) return;
+
   try {
-    await upsertTelegramUser({
+    const user = await upsertTelegramUser({
       telegramUserId: ctx.from.id,
       username: ctx.from.username,
     });
+
+    if (user.isBlocked) {
+      await ctx.reply("🚫 Sizning hisobingiz bloklangan. Admin bilan bog‘laning.");
+      return;
+    }
   } catch (error) {
     console.error("/start uchun foydalanuvchini saqlab bo‘lmadi:", error);
     await ctx.reply(
@@ -92,6 +128,8 @@ bot.command("help", async (ctx) => {
 // Command: /stats
 bot.command("stats", async (ctx) => {
   if (!ctx.from) return;
+  if (!(await ensureUserNotBlocked(ctx))) return;
+
   const stats = await getUserStats(ctx.from.id);
 
   const lines = [
@@ -106,16 +144,42 @@ bot.command("stats", async (ctx) => {
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
 });
 
+// Command: /myjobs
+bot.command("myjobs", async (ctx) => {
+  if (!ctx.from) return;
+  if (!(await ensureUserNotBlocked(ctx))) return;
+
+  const jobs = await getUserRecentJobs(ctx.from.id, 10);
+
+  if (jobs.length === 0) {
+    await ctx.reply("📭 Hali hech qanday yuklash so‘rovi yo‘q. Link yuboring!");
+    return;
+  }
+
+  const lines = ["📋 **Oxirgi yuklashlaringiz:**", ""];
+
+  for (const job of jobs) {
+    const emoji = STATUS_EMOJI[job.status] ?? "❓";
+    const date = new Date(job.createdAt).toLocaleString("uz-UZ", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const title = job.title ?? job.platform.toUpperCase();
+    lines.push(`${emoji} **${title}** (${job.requestedFormat})`);
+    lines.push(`   📅 ${date} | ${job.status}`);
+    lines.push("");
+  }
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
 // Command: /admin
 bot.command("admin", async (ctx) => {
   if (!ctx.from) return;
 
-  const user = await upsertTelegramUser({
-    telegramUserId: ctx.from.id,
-    username: ctx.from.username,
-  });
-
-  const isAdmin = user.isAdmin || (adminIdEnv && ctx.from.id === adminIdEnv);
+  const isAdmin = await isAdminUser(ctx.from.id, ctx.from.username);
 
   if (!isAdmin) {
     await ctx.reply("❌ Bu buyruq faqat adminlar uchun.");
@@ -137,9 +201,66 @@ bot.command("admin", async (ctx) => {
     `• Instagram: ${stats.platformBreakdown.instagram ?? 0}`,
     `• TikTok: ${stats.platformBreakdown.tiktok ?? 0}`,
     `• VK: ${stats.platformBreakdown.vk ?? 0}`,
+    "",
+    "🛠 **Admin buyruqlar:**",
+    "`/block <telegram_id>` — foydalanuvchini bloklash",
+    "`/unblock <telegram_id>` — blokdan chiqarish",
   ];
 
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
+// Command: /block (admin only)
+bot.command("block", async (ctx) => {
+  if (!ctx.from) return;
+
+  const isAdmin = await isAdminUser(ctx.from.id, ctx.from.username);
+  if (!isAdmin) {
+    await ctx.reply("❌ Bu buyruq faqat adminlar uchun.");
+    return;
+  }
+
+  const targetId = Number(ctx.match?.trim());
+  if (!targetId || Number.isNaN(targetId)) {
+    await ctx.reply("❌ Foydalanuvchi ID sini kiriting.\nMisol: `/block 123456789`", { parse_mode: "Markdown" });
+    return;
+  }
+
+  if (targetId === ctx.from.id) {
+    await ctx.reply("❌ O‘zingizni bloklay olmaysiz.");
+    return;
+  }
+
+  const success = await toggleUserBlock(targetId, true);
+  if (success) {
+    await ctx.reply(`🚫 Foydalanuvchi \`${targetId}\` bloklandi.`, { parse_mode: "Markdown" });
+  } else {
+    await ctx.reply(`❌ Foydalanuvchi \`${targetId}\` topilmadi.`, { parse_mode: "Markdown" });
+  }
+});
+
+// Command: /unblock (admin only)
+bot.command("unblock", async (ctx) => {
+  if (!ctx.from) return;
+
+  const isAdmin = await isAdminUser(ctx.from.id, ctx.from.username);
+  if (!isAdmin) {
+    await ctx.reply("❌ Bu buyruq faqat adminlar uchun.");
+    return;
+  }
+
+  const targetId = Number(ctx.match?.trim());
+  if (!targetId || Number.isNaN(targetId)) {
+    await ctx.reply("❌ Foydalanuvchi ID sini kiriting.\nMisol: `/unblock 123456789`", { parse_mode: "Markdown" });
+    return;
+  }
+
+  const success = await toggleUserBlock(targetId, false);
+  if (success) {
+    await ctx.reply(`✅ Foydalanuvchi \`${targetId}\` blokdan chiqarildi.`, { parse_mode: "Markdown" });
+  } else {
+    await ctx.reply(`❌ Foydalanuvchi \`${targetId}\` topilmadi.`, { parse_mode: "Markdown" });
+  }
 });
 
 // Handle URL text messages
@@ -149,6 +270,8 @@ bot.on("message:text", async (ctx) => {
 
   // Ignore commands
   if (rawText.startsWith("/")) return;
+
+  if (!(await ensureUserNotBlocked(ctx))) return;
 
   const normalizedUrl = cleanUrl(rawText);
 
@@ -191,6 +314,11 @@ bot.on("message:text", async (ctx) => {
 // Callback query: Format selection
 bot.callbackQuery(/^dl:([^:]+):(video|audio)$/, async (ctx) => {
   if (!ctx.from) return;
+
+  if (!(await ensureUserNotBlocked(ctx))) {
+    await ctx.answerCallbackQuery({ text: "Hisobingiz bloklangan.", show_alert: true });
+    return;
+  }
 
   const requestId = ctx.match[1];
   const requestedFormat = ctx.match[2] as RequestedFormat;
@@ -289,11 +417,13 @@ async function start(): Promise<void> {
   const webhookUrl = process.env.WEBHOOK_URL;
   const port = Number(process.env.PORT ?? 3000);
 
+  bot.catch((err) => {
+    console.error("Bot xatoligi yuz berdi:", err.error || err);
+  });
+
   if (webhookUrl) {
-    fastify.post("/webhook", async (request, reply) => {
-      const handler = webhookCallback(bot, "fastify");
-      return handler(request, reply);
-    });
+    const webhookHandler = webhookCallback(bot, "fastify");
+    fastify.post("/webhook", webhookHandler);
 
     await bot.api.setWebhook(`${webhookUrl.replace(/\/$/, "")}/webhook`);
     await fastify.listen({ port, host: "0.0.0.0" });
@@ -301,9 +431,9 @@ async function start(): Promise<void> {
     return;
   }
 
-  bot.catch((err) => {
-    console.error("Bot xatoligi yuz berdi:", err.error || err);
-  });
+  // Polling rejimida ham health endpoint ishlaydi
+  await fastify.listen({ port, host: "0.0.0.0" });
+  console.log(`Health endpoint: http://localhost:${port}/health`);
 
   await bot.start();
   console.log("Bot long polling rejimida ishga tushdi.");
