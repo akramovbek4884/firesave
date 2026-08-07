@@ -38,7 +38,7 @@ jobs:
             ${{ runner.os }}-pnpm-store-
 
       - name: Install Dependencies
-        run: pnpm install --frozen-lockfile || npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck & Build Monorepo
-        run: npm run build
+        run: pnpm run build
