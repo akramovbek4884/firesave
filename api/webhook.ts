@@ -1,5 +1,3 @@
-import 'dotenv/config';
-
 interface VercelRequest {
   method?: string;
   body?: unknown;
