@@ -1,6 +1,6 @@
 {
   "version": 2,
   "routes": [
-    { "src": "/api/webhook", "dest": "/api/webhook" }
+    { "src": "/api/webhook", "dest": "/api/webhook.ts" }
   ]
 }

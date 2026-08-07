@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "build": "tsc -b",
+    "vercel-build": "pnpm run build",
     "dev:bot": "tsx apps/bot/src/index.ts",
     "dev:worker": "tsx apps/worker/src/index.ts",
     "dev": "concurrently -n bot,worker -c blue,green \"pnpm dev:bot\" \"pnpm dev:worker\"",

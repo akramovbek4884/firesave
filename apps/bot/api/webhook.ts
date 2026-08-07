@@ -1,3 +1,3 @@
-import { webhookHandler } from "../src/bot";
+import { webhookHandler } from "../dist/bot.js";
 
 export default webhookHandler;
