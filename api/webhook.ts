@@ -1,13 +1,13 @@
 import { webhookHandler } from "../apps/bot/src/bot";
 
-export default async function handler(req: unknown, res: unknown) {
+export default async function handler(req: any, res: any) {
   try {
-    return await webhookHandler(req as any, res as any);
+    await webhookHandler(req, res);
   } catch (error) {
     console.error("Webhook function error:", error);
-    if (res && typeof (res as any).statusCode === "number") {
-      (res as any).statusCode = 500;
-      (res as any).end?.("Webhook handler error");
+    if (res && typeof res.statusCode === "number") {
+      res.statusCode = 500;
+      res.end("Webhook handler error");
     }
   }
 }
