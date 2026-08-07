@@ -1,6 +1,7 @@
 {
   "version": 2,
   "routes": [
-    { "src": "/api/webhook", "dest": "/api/webhook.ts" }
+  { "src": "/api/webhook", "dest": "/api/webhook.ts" },
+  { "src": "/api/health-db", "dest": "/api/health-db.ts" }
   ]
 }
