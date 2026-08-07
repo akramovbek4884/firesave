@@ -425,7 +425,8 @@ async function start(): Promise<void> {
     const webhookHandler = webhookCallback(bot, "fastify");
     fastify.post("/webhook", webhookHandler);
 
-    await bot.api.setWebhook(`${webhookUrl.replace(/\/$/, "")}/webhook`);
+    // WEBHOOK_URL should be the full public endpoint, e.g. https://firesave-bot.vercel.app/api/webhook
+    await bot.api.setWebhook(webhookUrl.replace(/\/$/, ""));
     await fastify.listen({ port, host: "0.0.0.0" });
     fastify.log.info(`Bot webhook rejimida ishga tushdi: ${port}`);
     return;
