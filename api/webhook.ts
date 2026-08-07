@@ -1,3 +1,5 @@
+import { webhookHandler } from "../apps/bot/src/bot";
+
 interface VercelRequest {
   method?: string;
   body?: unknown;
@@ -10,10 +12,10 @@ interface VercelResponse {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method === 'POST') {
-    res.status(200).json({ ok: true, message: 'Webhook endpoint is alive' });
+  if (req.method === "POST") {
+    await webhookHandler(req as never, res as never);
     return;
   }
 
-  res.status(200).json({ ok: true, service: 'firesave-webhook' });
+  res.status(200).json({ ok: true, service: "firesave-webhook" });
 }
