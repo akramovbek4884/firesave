@@ -4,11 +4,14 @@ import 'dotenv/config';
 interface VercelRequest {
   method?: string;
   body?: unknown;
+  headers?: Record<string, string | undefined>;
 }
 
 interface VercelResponse {
   status(code: number): VercelResponse;
-  json(payload: unknown): void;
+  json(payload: unknown): VercelResponse;
+  send(payload: unknown): VercelResponse;
+  end?: (payload?: string) => VercelResponse;
 }
 
 const botToken = process.env.BOT_TOKEN;
@@ -22,7 +25,12 @@ const handle = webhookCallback(bot, 'stdHTTP');
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'POST') {
-    await handle(req, res);
+    try {
+      await handle(req as never, res as never);
+    } catch (error) {
+      console.error('Webhook error:', error);
+      res.status(500).json({ ok: false, error: 'Webhook failed' });
+    }
     return;
   }
 
