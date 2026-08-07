@@ -8,7 +8,7 @@ import {
   type DownloadJobPayload,
   type Platform,
   type RequestedFormat,
-} from "../../../packages/core/src/index";
+} from "@firesave/core";
 import {
   checkUserRateLimit,
   createDownloadJobRecord,
@@ -20,7 +20,7 @@ import {
   toggleUserBlock,
   upsertTelegramUser,
   createSignedDownloadUrl,
-} from "../../../packages/db/src/index";
+} from "@firesave/db";
 
 dotenv.config();
 
