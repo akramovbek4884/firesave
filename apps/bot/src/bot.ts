@@ -402,5 +402,5 @@ bot.catch((err) => {
   console.error("Bot xatoligi yuz berdi:", err.error || err);
 });
 
-export const webhookHandler = webhookCallback(bot, "express");
+export const webhookHandler = webhookCallback(bot, "callback");
 export { bot };
