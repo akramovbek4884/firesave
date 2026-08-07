@@ -80,6 +80,9 @@ importers:
       '@supabase/supabase-js':
         specifier: ^2.56.0
         version: 2.112.2
+      '@types/pg':
+        specifier: ^8.20.4
+        version: 8.20.4
       pg:
         specifier: ^8.22.0
         version: 8.22.0
